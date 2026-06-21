@@ -15,6 +15,10 @@ def parse_args():
                             type=str,
                             help="GitHub's username of the target")
     user_parser.add_argument('--json', type=str, help="File to write the JSON output to")
+    user_parser.add_argument('--full-collab', action='store_true',
+                            help="Run enhanced close-friends analysis via commit-graph ordered-diff")
+    user_parser.add_argument('--no-social', action='store_true',
+                            help="Skip social-based close friends (only commit-graph when --full-collab is used)")
 
     email_parser = subparsers.add_parser('email', help='Track down a GitHub user by its email address.')
     email_parser.add_argument(dest="email_address",
@@ -37,6 +41,24 @@ def parse_args():
                                 type=str,
                                 help="GitHub's username of the target")
 
+    org_parser = subparsers.add_parser('org', help='Analyze a GitHub organization: list public members with multi-account chains, membership history, and intra-org collaboration.')
+    org_parser.add_argument(dest="org_name",
+                            action='store',
+                            type=str,
+                            help="GitHub organization handle (e.g. google, facebook)")
+    org_parser.add_argument('--json', type=str, help="File to write the JSON output to")
+    org_parser.add_argument('--skip-collab', action='store_true',
+                            help="Skip per-member close-friends analysis (faster)")
+
+    friends_parser = subparsers.add_parser('close-friends', help='Run enhanced close-collaborator analysis for a user via commit-graph ordered-diff')
+    friends_parser.add_argument(dest="username",
+                                action='store',
+                                type=str,
+                                help="GitHub's username of the target")
+    friends_parser.add_argument('--json', type=str, help="File to write the JSON output to")
+    friends_parser.add_argument('--no-social', action='store_true',
+                                help="Skip social-based analysis (graph only)")
+
     args = parser.parse_args(args=None if sys.argv[1:] else ['--help'])
 
     import trio
@@ -48,7 +70,7 @@ def parse_args():
             from gitfive.modules import username_mod
             if not args.username:
                 exit("[-] Please give a valid username.\nExample : gitfive user mxrch")
-            trio.run(username_mod.hunt, args.username, args.json)
+            trio.run(username_mod.hunt, args.username, args.json, args.full_collab, args.no_social)
         case "email":
             from gitfive.modules import email_mod
             if not args.email_address:
@@ -64,3 +86,13 @@ def parse_args():
             if not args.username:
                 exit("[-] Please give a valid username.\nExample : gitfive light mxrch")
             trio.run(light_mod.hunt, args.username)
+        case "org":
+            from gitfive.modules import org_mod
+            if not args.org_name:
+                exit("[-] Please give a valid organization name.\nExample : gitfive org google")
+            trio.run(org_mod.hunt, args.org_name, args.json, not args.skip_collab)
+        case "close-friends":
+            from gitfive.modules import username_mod
+            if not args.username:
+                exit("[-] Please give a valid username.\nExample : gitfive close-friends mxrch")
+            trio.run(username_mod.hunt_close_friends_only, args.username, args.json, not args.no_social)

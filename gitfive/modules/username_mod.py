@@ -13,7 +13,8 @@ from gitfive.lib.xray import analyze_ext_contribs
 import gitfive.config as config
 
 
-async def hunt(username: str, json_file="", runner: GitfiveRunner=None):
+async def hunt(username: str, json_file="", runner: GitfiveRunner=None,
+                full_collab: bool=False, no_social: bool=False):
     if not runner:
         runner = GitfiveRunner()
         await runner.login()
@@ -25,7 +26,7 @@ async def hunt(username: str, json_file="", runner: GitfiveRunner=None):
     runner.target._scrape(data)
 
     if runner.target.type == "Organization":
-        exit("\n[-] GitFive doesn't supports organizations yet.")
+        exit("\n[-] GitFive's `user` command targets accounts only. Use `gitfive org <orgname>` for organization analysis.")
 
     runner.rc.print("\n✍️ PROFILE", style="navajo_white1")
 
@@ -106,6 +107,10 @@ async def hunt(username: str, json_file="", runner: GitfiveRunner=None):
     if runner.target.ssh_keys:
         _nb_keys = len(runner.target.ssh_keys)
         runner.rc.print(f"[+] 🔐 Found {_nb_keys} SSH public key{'s' if _nb_keys > 1 else ''} !", style="light_green")
+        fps = extract_all_ssh_fingerprints(runner.target.ssh_keys)
+        if fps:
+            runner.target.ssh_key_fingerprints = fps
+            print(f"  Fingerprints extracted: {len(fps)} (MD5 + SHA256)")
         runner.rc.print("Visible in the JSON output, if specified.", style="italic")
     else:
         print("Nothing to show.")
@@ -118,7 +123,6 @@ async def hunt(username: str, json_file="", runner: GitfiveRunner=None):
     if gist_stats['starred']:
         print(f"Starred : {gist_stats['starred']}")
 
-    # Emails generation
     if runner.target.company:
         print()
         out = guess_custom_domain(runner)
@@ -144,19 +148,33 @@ async def hunt(username: str, json_file="", runner: GitfiveRunner=None):
 
     runner.rc.print("\n🏭 REPOSITORIES STATS\n", style="light_salmon1")
 
-    # Targets repos
     await repos.get_list(runner)
     repos.show(runner)
 
     runner.rc.print("\n🎎 CLOSE FRIENDS\n", style="deep_pink2")
 
-    # Close friends
-    runner.target.potential_friends = await close_friends.guess(runner)
-    close_friends.show(runner)
+    use_social = not no_social
+    use_graph = full_collab
+
+    if full_collab:
+        runner.target.potential_friends = await close_friends.guess_enhanced(
+            runner,
+            use_social=use_social,
+            use_commit_graph=use_graph
+        )
+        close_friends.show(runner)
+        close_friends.show_close_collaborators(runner)
+    else:
+        if use_social:
+            runner.target.potential_friends = await close_friends.guess(runner)
+            close_friends.show(runner)
+        else:
+            runner.rc.print("[!] --no-social requires --full-collab to enable commit-graph analysis.", style="yellow")
+            runner.target.potential_friends = await close_friends.guess(runner)
+            close_friends.show(runner)
 
     runner.rc.print("\n🏯 ORGANIZATIONS\n", style="plum2")
 
-    # Organizations
     await organizations.scrape(runner)
     organizations.show(runner)
 
@@ -178,6 +196,8 @@ async def hunt(username: str, json_file="", runner: GitfiveRunner=None):
     
     await xray.analyze(runner)
 
+    temp_repo_name = ""
+    emails_index = {}
     while True:
         emails = emails_gen.generate(runner, default_domains_list=config.emails_default_domains,
         domain_prefixes=config.email_common_domains_prefixes)
@@ -186,7 +206,7 @@ async def hunt(username: str, json_file="", runner: GitfiveRunner=None):
 
         if not emails:
             print("\n[-] No more emails have been generated.")
-            break # end iterations
+            break
         runner.rc.print(f"\n[+] {len(emails)} potential email{'s' if len(emails) > 1 else ''} generated !", style="light_green")
 
         temp_repo_name, emails_index = await metamon.start(runner, emails)
@@ -211,22 +231,84 @@ async def hunt(username: str, json_file="", runner: GitfiveRunner=None):
         if new_usernames:
             print()
         if {x.lower() for x in runner.target.usernames} == {x.lower() for x in runner.analyzed_usernames}:
-            break # end iterations
+            break
         new_variations = xray.near_lookup(runner)
         if not new_variations:
             print("[-] No more name variation have been found.")
-            break # end iterations
+            break
         xray.near_show(runner)
 
-    # Delete
-    runner.rc.print("\n[+] Deleted the remote repo", style="italic")
-    await github.delete_repo(runner, temp_repo_name)
+    if temp_repo_name:
+        runner.rc.print("\n[+] Deleted the remote repo", style="italic")
+        await github.delete_repo(runner, temp_repo_name)
     
     if json_file:
         import json
         with open(json_file, "w", encoding="utf-8") as f:
             f.write(runner.target.export_json())
         runner.rc.print(f"[+] JSON output wrote to {json_file} !", style="italic")
+
+    runner.tmprinter.out("Deleting temp folder...")
+    from gitfive.lib.utils import delete_tmp_dir; delete_tmp_dir()
+    runner.tmprinter.clear()
+
+
+async def hunt_close_friends_only(username: str, json_file="", use_social: bool=True, runner: GitfiveRunner=None):
+    if not runner:
+        runner = GitfiveRunner()
+        await runner.login()
+
+    data = await runner.api.query(f"/users/{username}")
+    if data.get("message") == "Not Found":
+        exit(f'\n[-] User "{username}" not found.')
+
+    runner.target._scrape(data)
+
+    if runner.target.type == "Organization":
+        exit("\n[-] This command targets users only. Use `gitfive org <orgname>` for organization analysis.")
+
+    print(f"\n🎯 Target: @{runner.target.username} ({runner.target.name or 'N/A'})")
+
+    runner.tmprinter.out("Fetching repos list...")
+    await repos.get_list(runner)
+    runner.tmprinter.clear()
+
+    runner.rc.print("\n🎎 CLOSE FRIENDS / CLOSE COLLABORATORS ANALYSIS", style="deep_pink2 bold")
+    print(f"  Social analysis: {'ON' if use_social else 'OFF'}")
+    print(f"  Commit-graph ordered-diff analysis: ON (always for this command)")
+    print()
+
+    runner.target.potential_friends = await close_friends.guess_enhanced(
+        runner,
+        use_social=use_social,
+        use_commit_graph=True
+    )
+
+    close_friends.show(runner)
+    close_friends.show_close_collaborators(runner)
+
+    if json_file:
+        import json
+        with open(json_file, "w", encoding="utf-8") as f:
+            export_data = {
+                "target": {
+                    "username": runner.target.username,
+                    "name": runner.target.name,
+                    "id": runner.target.id
+                },
+                "potential_friends": runner.target.potential_friends,
+                "close_collaborators": {},
+                "collaborator_account_links": runner.target.collaborator_account_links,
+                "commit_graph_analysis": {}
+            }
+            for k, v in runner.target.close_collaborators.items():
+                import copy
+                vc = copy.deepcopy(v)
+                if "evidence" in vc and "sample_ordered_matches" in vc["evidence"]:
+                    vc["evidence"]["sample_ordered_matches"] = []
+                export_data["close_collaborators"][k] = vc
+            f.write(json.dumps(export_data, default=str, indent=4))
+        runner.rc.print(f"\n[+] JSON output wrote to {json_file} !", style="italic")
 
     runner.tmprinter.out("Deleting temp folder...")
     from gitfive.lib.utils import delete_tmp_dir; delete_tmp_dir()

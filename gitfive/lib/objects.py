@@ -392,6 +392,7 @@ class Target():
         self.domains = set()
 
         self.ssh_keys: List[str] = []
+        self.ssh_key_fingerprints: Dict[str, str] = {}
 
         self.all_contribs: Dict[str, Dict[str, Dict[str, Dict[str, Set[str]]]]] = {}
         self.ext_contribs: Dict[str, Dict[str, Dict[str, Dict[str, Set[str]]]]] = {}
@@ -402,6 +403,20 @@ class Target():
         self.emails = set()
         self.generated_emails = set()
         self.registered_emails: Dict[str, any] = {}
+
+        self.org_name: str = ""
+        self.org_info: Dict[str, any] = {}
+        self.org_members: Dict[str, Dict[str, any]] = {}
+        self.org_membership_history: Dict[str, Dict[str, List[Dict[str, any]]]] = {}
+        self.org_member_account_chains: Dict[str, Dict[str, any]] = {}
+        self.renamed_or_deleted_users: Dict[str, Dict[str, any]] = {}
+        self.last_known_active_usernames: Dict[str, str] = {}
+        self.identity_index: Dict[str, Set[str]] = {}
+
+        self.close_collaborators: Dict[str, Dict[str, any]] = {}
+        self.collaboration_timeline: List[Dict[str, any]] = []
+        self.commit_graph_analysis: Dict[str, Dict[str, any]] = {}
+        self.collaborator_account_links: Dict[str, Dict[str, any]] = {}
 
     def export_json(self):
         return json.dumps(self, cls=TargetEncoder, indent=4)
@@ -469,7 +484,12 @@ class GitfiveRunner():
             "repos_list": trio.CapacityLimiter(50),
             "commits_scrape": trio.CapacityLimiter(50),
             "commits_fetch_avatar": trio.CapacityLimiter(1), # https://github.com/mxrch/GitFive/issues/3#issuecomment-1321260050
-            "orgs_list": trio.CapacityLimiter(50)
+            "orgs_list": trio.CapacityLimiter(50),
+            "org_members": trio.CapacityLimiter(30),
+            "org_repos": trio.CapacityLimiter(30),
+            "member_profile": trio.CapacityLimiter(40),
+            "collab_commits": trio.CapacityLimiter(40),
+            "identity_resolve": trio.CapacityLimiter(30)
         }
 
         self.xray_near_iteration = 0

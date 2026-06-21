@@ -6,6 +6,10 @@ from rich.console import Console
 import imagehash
 from PIL import Image
 from unidecode import unidecode
+import hashlib
+import base64
+from datetime import datetime, timedelta
+from collections import defaultdict, OrderedDict
 
 import os
 import re
@@ -224,3 +228,228 @@ def check_new_version() -> tuple[bool, dict[str, str]]:
     if parse_version(new_version) > parse_version(current_version.metadata.get("version", "")):
         return True, {"version": new_version, "name": new_name}
     return False, {}
+
+
+def extract_ssh_key_fingerprint(ssh_key_line: str, algo: str = "md5") -> Optional[str]:
+    try:
+        parts = ssh_key_line.strip().split()
+        if len(parts) < 2:
+            return None
+        key_type = parts[0]
+        key_b64 = parts[1]
+        try:
+            key_bytes = base64.b64decode(key_b64)
+        except Exception:
+            return None
+        if algo.lower() == "md5":
+            digest = hashlib.md5(key_bytes).hexdigest()
+            return "MD5:" + ":".join(digest[i:i+2] for i in range(0, len(digest), 2))
+        elif algo.lower() == "sha256":
+            digest = hashlib.sha256(key_bytes).digest()
+            return "SHA256:" + base64.b64encode(digest).decode().rstrip("=")
+        return None
+    except Exception:
+        return None
+
+
+def extract_all_ssh_fingerprints(ssh_keys: List[str]) -> Dict[str, str]:
+    fingerprints = {}
+    for idx, key_line in enumerate(ssh_keys):
+        fp_md5 = extract_ssh_key_fingerprint(key_line, "md5")
+        fp_sha256 = extract_ssh_key_fingerprint(key_line, "sha256")
+        if fp_md5:
+            fingerprints[f"key_{idx}_md5"] = fp_md5
+        if fp_sha256:
+            fingerprints[f"key_{idx}_sha256"] = fp_sha256
+    return fingerprints
+
+
+def format_date(date_str: Optional[str]) -> str:
+    if not date_str:
+        return "N/A"
+    try:
+        if "T" in date_str:
+            dt = datetime.strptime(date_str, "%Y-%m-%dT%H:%M:%SZ")
+        elif " " in date_str:
+            dt = datetime.strptime(date_str, "%Y/%m/%d %H:%M:%S")
+        else:
+            dt = datetime.strptime(date_str, "%Y-%m-%d")
+        return dt.strftime("%Y/%m/%d")
+    except Exception:
+        return date_str
+
+
+def normalize_email(email: str) -> str:
+    if not email:
+        return ""
+    email = email.strip().lower()
+    if "+" in email.split("@")[0]:
+        local, domain = email.split("@", 1)
+        local = local.split("+")[0]
+        email = f"{local}@{domain}"
+    return email
+
+
+def group_emails_by_domain(emails: Set[str]) -> Dict[str, Set[str]]:
+    by_domain: Dict[str, Set[str]] = defaultdict(set)
+    for email in emails:
+        if "@" in email:
+            domain = email.split("@")[-1].lower()
+            by_domain[domain].add(email)
+    return dict(by_domain)
+
+
+def build_identity_cluster(identities: Dict[str, Set[str]], new_key: str, new_values: Set[str]) -> Dict[str, Set[str]]:
+    cluster_key = None
+    for existing_key, existing_vals in identities.items():
+        if existing_key == new_key or new_key in existing_vals or (new_values & existing_vals):
+            cluster_key = existing_key
+            break
+    if cluster_key is None:
+        identities[new_key] = {new_key} | new_values
+    else:
+        identities[cluster_key].update({new_key} | new_values)
+    return identities
+
+
+def merge_identity_clusters(identities: Dict[str, Set[str]]) -> Dict[str, Set[str]]:
+    changed = True
+    while changed:
+        changed = False
+        keys = list(identities.keys())
+        for i, k1 in enumerate(keys):
+            if k1 not in identities:
+                continue
+            for k2 in keys[i+1:]:
+                if k2 not in identities:
+                    continue
+                if identities[k1] & identities[k2]:
+                    identities[k1].update(identities[k2])
+                    del identities[k2]
+                    changed = True
+    return identities
+
+
+def compute_time_diff_minutes(dt1: datetime, dt2: datetime) -> int:
+    return abs(int((dt1 - dt2).total_seconds() / 60))
+
+
+def is_ordered_diff_sequence(commits_a: List[Dict[str, any]], commits_b: List[Dict[str, any]], time_window_min: int = 60) -> List[Dict[str, any]]:
+    ordered_matches = []
+    if not commits_a or not commits_b:
+        return ordered_matches
+    commits_a_sorted = sorted(commits_a, key=lambda x: x.get("timestamp", datetime.min))
+    commits_b_sorted = sorted(commits_b, key=lambda x: x.get("timestamp", datetime.min))
+    i, j = 0, 0
+    while i < len(commits_a_sorted) and j < len(commits_b_sorted):
+        c_a = commits_a_sorted[i]
+        c_b = commits_b_sorted[j]
+        ts_a = c_a.get("timestamp")
+        ts_b = c_b.get("timestamp")
+        if not ts_a or not ts_b:
+            i += 1
+            j += 1
+            continue
+        diff = compute_time_diff_minutes(ts_a, ts_b)
+        if diff <= time_window_min:
+            ordered_matches.append({
+                "commit_a": c_a,
+                "commit_b": c_b,
+                "time_diff_min": diff,
+                "same_repo": c_a.get("repo") == c_b.get("repo")
+            })
+        if ts_a < ts_b:
+            i += 1
+        else:
+            j += 1
+    return ordered_matches
+
+
+def compute_collaboration_score(ordered_matches: List[Dict[str, any]], total_commits_a: int, total_commits_b: int) -> float:
+    if not ordered_matches or total_commits_a == 0 or total_commits_b == 0:
+        return 0.0
+    same_repo_count = sum(1 for m in ordered_matches if m["same_repo"])
+    time_diff_sum = sum(m["time_diff_min"] for m in ordered_matches)
+    avg_time_diff = time_diff_sum / len(ordered_matches) if ordered_matches else 999
+    time_factor = max(0.0, 1.0 - (avg_time_diff / 60.0))
+    match_ratio = len(ordered_matches) / min(total_commits_a, total_commits_b)
+    same_repo_factor = same_repo_count / len(ordered_matches) if ordered_matches else 0
+    score = (match_ratio * 0.4) + (same_repo_factor * 0.35) + (time_factor * 0.25)
+    return round(score * 100, 2)
+
+
+def build_collaboration_timeline(ordered_matches: List[Dict[str, any]], bucket_size_days: int = 30) -> List[Dict[str, any]]:
+    if not ordered_matches:
+        return []
+    all_timestamps = []
+    for m in ordered_matches:
+        ts_a = m["commit_a"].get("timestamp")
+        ts_b = m["commit_b"].get("timestamp")
+        if ts_a:
+            all_timestamps.append(ts_a)
+        if ts_b:
+            all_timestamps.append(ts_b)
+    if not all_timestamps:
+        return []
+    min_ts = min(all_timestamps)
+    max_ts = max(all_timestamps)
+    start_bucket = datetime(min_ts.year, min_ts.month, 1)
+    end_bucket = datetime(max_ts.year, max_ts.month, 1)
+    buckets: Dict[datetime, int] = defaultdict(int)
+    for ts in all_timestamps:
+        bucket_key = datetime(ts.year, ts.month, 1)
+        buckets[bucket_key] += 1
+    timeline = []
+    current = start_bucket
+    while current <= end_bucket:
+        count = buckets.get(current, 0)
+        if count > 0:
+            timeline.append({
+                "period": current.strftime("%Y-%m"),
+                "collaboration_events": count
+            })
+        current += timedelta(days=30)
+        current = datetime(current.year, current.month, 1)
+    return timeline
+
+
+def detect_account_renames(api_data_history: List[Dict[str, any]], current_username: str) -> Dict[str, any]:
+    result = {
+        "was_renamed": False,
+        "previous_usernames": [],
+        "last_known_active": current_username,
+        "is_deleted": False
+    }
+    if not api_data_history:
+        return result
+    seen = set()
+    for entry in api_data_history:
+        login = entry.get("login", "")
+        if login and login not in seen and login.lower() != current_username.lower():
+            seen.add(login)
+            result["previous_usernames"].append({
+                "username": login,
+                "date": entry.get("recorded_at", "N/A")
+            })
+            result["last_known_active"] = login
+    if len(result["previous_usernames"]) > 0:
+        result["was_renamed"] = True
+    return result
+
+
+def safe_get_key(d: Dict[str, any], key: str, default: any = None) -> any:
+    try:
+        return d.get(key, default)
+    except Exception:
+        return default
+
+
+def deduplicate_preserve_order(seq: List[any]) -> List[any]:
+    seen = set()
+    result = []
+    for item in seq:
+        key = str(item).lower() if isinstance(item, str) else item
+        if key not in seen:
+            seen.add(key)
+            result.append(item)
+    return result
