@@ -192,8 +192,8 @@ async def analyze_commit_graph(runner: GitfiveRunner, time_window_min: int = 60)
 
         ordered_matches = is_ordered_diff_sequence(target_commits_sorted, collab_commits, time_window_min)
 
-        same_repo_commits = sum(1 for c in collab_commits if any(
-            tc.get("repo") == c.get("repo") for tc in target_commits_sorted
+        same_repo_commits = sum(1 for c in collab_commits if c.get("repo") and any(
+            tc.get("repo") == c["repo"] for tc in target_commits_sorted
         ))
 
         score = compute_collaboration_score(
@@ -202,7 +202,10 @@ async def analyze_commit_graph(runner: GitfiveRunner, time_window_min: int = 60)
             len(collab_commits)
         )
 
-        close_window_pairs = sum(1 for m in ordered_matches if m["time_diff_min"] <= 15)
+        close_window_pairs = sum(
+            1 for m in ordered_matches
+            if isinstance(m, dict) and isinstance(m.get("time_diff_min"), (int, float)) and m["time_diff_min"] <= 15
+        )
 
         if score < 5 and len(ordered_matches) < 5:
             continue
@@ -388,15 +391,19 @@ def show_close_collaborators(runner: GitfiveRunner):
             print(f"    Repos ({len(repos)}): {', '.join(repos[:8])}{' ...' if len(repos) > 8 else ''}")
 
         timeline = data.get("timeline", [])
-        if timeline:
-            total_events = sum(t["collaboration_events"] for t in timeline)
-            peak = max(timeline, key=lambda x: x["collaboration_events"])
-            print(f"    Timeline: {len(timeline)} months, peak {peak['period']} ({peak['collaboration_events']} events)")
-            bar_max = max(t["collaboration_events"] for t in timeline)
-            for t in timeline:
-                bar_len = int(t["collaboration_events"] / bar_max * 20) if bar_max > 0 else 0
-                bar = "█" * bar_len + "░" * (20 - bar_len)
-                print(f"      {t['period']} |{bar}| {t['collaboration_events']}")
+        if timeline and isinstance(timeline, list):
+            valid_tl = [t for t in timeline if isinstance(t, dict) and isinstance(t.get("collaboration_events"), int)]
+            if valid_tl:
+                total_events = sum(t["collaboration_events"] for t in valid_tl)
+                peak = max(valid_tl, key=lambda x: x["collaboration_events"])
+                peak_period = peak.get("period", "unknown")
+                peak_count = peak.get("collaboration_events", 0)
+                print(f"    Timeline: {len(valid_tl)} months, peak {peak_period} ({peak_count} events)")
+                bar_max = max(t["collaboration_events"] for t in valid_tl)
+                for t in valid_tl:
+                    bar_len = int(t["collaboration_events"] / bar_max * 20) if bar_max > 0 else 0
+                    bar = "█" * bar_len + "░" * (20 - bar_len)
+                    print(f"      {t.get('period', '?')} |{bar}| {t['collaboration_events']}")
 
     runner.rc.print("\n📊 Collaboration Score = (match_ratio × 0.4) + (same_repo_factor × 0.35) + (time_factor × 0.25)", style="italic dim")
     print("   Ordered match = two commits from target & collaborator within time window in commit sequence")

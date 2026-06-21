@@ -330,7 +330,13 @@ def merge_identity_clusters(identities: Dict[str, Set[str]]) -> Dict[str, Set[st
     return identities
 
 
-def compute_time_diff_minutes(dt1: datetime, dt2: datetime) -> int:
+def _is_valid_datetime(val) -> bool:
+    return isinstance(val, datetime) and val is not None
+
+
+def compute_time_diff_minutes(dt1, dt2) -> int:
+    if not _is_valid_datetime(dt1) or not _is_valid_datetime(dt2):
+        return -1
     return abs(int((dt1 - dt2).total_seconds() / 60))
 
 
@@ -338,19 +344,29 @@ def is_ordered_diff_sequence(commits_a: List[Dict[str, any]], commits_b: List[Di
     ordered_matches = []
     if not commits_a or not commits_b:
         return ordered_matches
-    commits_a_sorted = sorted(commits_a, key=lambda x: x.get("timestamp", datetime.min))
-    commits_b_sorted = sorted(commits_b, key=lambda x: x.get("timestamp", datetime.min))
+
+    valid_a = [c for c in commits_a if _is_valid_datetime(c.get("timestamp"))]
+    valid_b = [c for c in commits_b if _is_valid_datetime(c.get("timestamp"))]
+
+    if not valid_a or not valid_b:
+        return ordered_matches
+
+    commits_a_sorted = sorted(valid_a, key=lambda x: x["timestamp"])
+    commits_b_sorted = sorted(valid_b, key=lambda x: x["timestamp"])
+
     i, j = 0, 0
     while i < len(commits_a_sorted) and j < len(commits_b_sorted):
         c_a = commits_a_sorted[i]
         c_b = commits_b_sorted[j]
-        ts_a = c_a.get("timestamp")
-        ts_b = c_b.get("timestamp")
-        if not ts_a or not ts_b:
+        ts_a = c_a["timestamp"]
+        ts_b = c_b["timestamp"]
+
+        diff = compute_time_diff_minutes(ts_a, ts_b)
+        if diff < 0:
             i += 1
             j += 1
             continue
-        diff = compute_time_diff_minutes(ts_a, ts_b)
+
         if diff <= time_window_min:
             ordered_matches.append({
                 "commit_a": c_a,
@@ -358,6 +374,7 @@ def is_ordered_diff_sequence(commits_a: List[Dict[str, any]], commits_b: List[Di
                 "time_diff_min": diff,
                 "same_repo": c_a.get("repo") == c_b.get("repo")
             })
+
         if ts_a < ts_b:
             i += 1
         else:
@@ -366,16 +383,19 @@ def is_ordered_diff_sequence(commits_a: List[Dict[str, any]], commits_b: List[Di
 
 
 def compute_collaboration_score(ordered_matches: List[Dict[str, any]], total_commits_a: int, total_commits_b: int) -> float:
-    if not ordered_matches or total_commits_a == 0 or total_commits_b == 0:
+    if not ordered_matches or total_commits_a <= 0 or total_commits_b <= 0:
         return 0.0
-    same_repo_count = sum(1 for m in ordered_matches if m["same_repo"])
-    time_diff_sum = sum(m["time_diff_min"] for m in ordered_matches)
-    avg_time_diff = time_diff_sum / len(ordered_matches) if ordered_matches else 999
+    valid_matches = [m for m in ordered_matches if isinstance(m, dict) and isinstance(m.get("time_diff_min"), (int, float)) and m.get("time_diff_min", -1) >= 0]
+    if not valid_matches:
+        return 0.0
+    same_repo_count = sum(1 for m in valid_matches if m.get("same_repo"))
+    time_diff_sum = sum(m["time_diff_min"] for m in valid_matches)
+    avg_time_diff = time_diff_sum / len(valid_matches)
     time_factor = max(0.0, 1.0 - (avg_time_diff / 60.0))
-    match_ratio = len(ordered_matches) / min(total_commits_a, total_commits_b)
-    same_repo_factor = same_repo_count / len(ordered_matches) if ordered_matches else 0
+    match_ratio = len(valid_matches) / min(total_commits_a, total_commits_b)
+    same_repo_factor = same_repo_count / len(valid_matches)
     score = (match_ratio * 0.4) + (same_repo_factor * 0.35) + (time_factor * 0.25)
-    return round(score * 100, 2)
+    return round(max(0.0, score) * 100, 2)
 
 
 def build_collaboration_timeline(ordered_matches: List[Dict[str, any]], bucket_size_days: int = 30) -> List[Dict[str, any]]:
@@ -383,22 +403,34 @@ def build_collaboration_timeline(ordered_matches: List[Dict[str, any]], bucket_s
         return []
     all_timestamps = []
     for m in ordered_matches:
-        ts_a = m["commit_a"].get("timestamp")
-        ts_b = m["commit_b"].get("timestamp")
-        if ts_a:
+        if not isinstance(m, dict):
+            continue
+        commit_a = m.get("commit_a", {})
+        commit_b = m.get("commit_b", {})
+        if not isinstance(commit_a, dict) or not isinstance(commit_b, dict):
+            continue
+        ts_a = commit_a.get("timestamp")
+        ts_b = commit_b.get("timestamp")
+        if _is_valid_datetime(ts_a):
             all_timestamps.append(ts_a)
-        if ts_b:
+        if _is_valid_datetime(ts_b):
             all_timestamps.append(ts_b)
     if not all_timestamps:
         return []
-    min_ts = min(all_timestamps)
-    max_ts = max(all_timestamps)
+    try:
+        min_ts = min(all_timestamps)
+        max_ts = max(all_timestamps)
+    except (TypeError, ValueError):
+        return []
     start_bucket = datetime(min_ts.year, min_ts.month, 1)
     end_bucket = datetime(max_ts.year, max_ts.month, 1)
     buckets: Dict[datetime, int] = defaultdict(int)
     for ts in all_timestamps:
-        bucket_key = datetime(ts.year, ts.month, 1)
-        buckets[bucket_key] += 1
+        try:
+            bucket_key = datetime(ts.year, ts.month, 1)
+            buckets[bucket_key] += 1
+        except Exception:
+            continue
     timeline = []
     current = start_bucket
     while current <= end_bucket:

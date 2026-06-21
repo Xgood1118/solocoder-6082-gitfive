@@ -389,13 +389,18 @@ def detect_membership_changes(runner: GitfiveRunner):
                 "source": "profile_check"
             })
         if history:
+            def _safe_date_key(evt):
+                d = evt.get("date")
+                if isinstance(d, str) and d:
+                    return d
+                return "9999-12-31T23:59:59Z"
             runner.target.org_membership_history[username] = {
                 "username": username,
                 "last_known_active": (
                     username if member.get("is_active")
                     else runner.target.last_known_active_usernames.get(username, username)
                 ),
-                "events": sorted(history, key=lambda x: x.get("date", ""))
+                "events": sorted(history, key=_safe_date_key)
             }
 
 
@@ -488,17 +493,23 @@ def show_org_members(runner: GitfiveRunner):
     if runner.target.org_membership_history:
         print(f"\n📜 MEMBERSHIP CHANGE HISTORY")
         for username, hist in sorted(runner.target.org_membership_history.items()):
-            if len(hist.get("events", [])) >= 1:
+            events = hist.get("events", [])
+            if isinstance(events, list) and len(events) >= 1:
                 lk = hist.get("last_known_active", username)
                 suffix = f" → @{lk}" if lk != username else ""
                 print(f"\n  @{username}{suffix}:")
-                for evt in hist["events"]:
+                for evt in events:
+                    if not isinstance(evt, dict):
+                        continue
+                    ev_name = evt.get("event", "unknown")
                     ev_label = {
                         "joined": "✅ Joined",
                         "left_or_renamed": "↔️ Left/Renamed",
                         "deleted_or_renamed": "⚠️ Deleted/Renamed"
-                    }.get(evt["event"], evt["event"])
-                    print(f"    - {ev_label} on {format_date(evt['date'])} (via {evt['source']})")
+                    }.get(ev_name, ev_name)
+                    ev_date = evt.get("date")
+                    ev_source = evt.get("source", "unknown")
+                    print(f"    - {ev_label} on {format_date(ev_date)} (via {ev_source})")
 
     if runner.target.renamed_or_deleted_users:
         runner.rc.print(f"\n⚠️  RENAMED/DELETED USERS ({len(runner.target.renamed_or_deleted_users)})", style="yellow bold")
