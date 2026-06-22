@@ -433,15 +433,23 @@ def build_collaboration_timeline(ordered_matches: List[Dict[str, any]], bucket_s
             continue
     timeline = []
     current = start_bucket
-    while current <= end_bucket:
+    max_iterations = 1200
+    iterations = 0
+    while current <= end_bucket and iterations < max_iterations:
+        iterations += 1
         count = buckets.get(current, 0)
         if count > 0:
             timeline.append({
                 "period": current.strftime("%Y-%m"),
                 "collaboration_events": count
             })
-        current += timedelta(days=30)
-        current = datetime(current.year, current.month, 1)
+        if current.month == 12:
+            next_month = datetime(current.year + 1, 1, 1)
+        else:
+            next_month = datetime(current.year, current.month + 1, 1)
+        if next_month <= current:
+            break
+        current = next_month
     return timeline
 
 
