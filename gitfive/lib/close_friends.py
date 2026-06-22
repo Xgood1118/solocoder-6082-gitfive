@@ -216,7 +216,7 @@ async def analyze_commit_graph(runner: GitfiveRunner, time_window_min: int = 60)
             "identity": identity,
             "gh_username": info["gh_username"],
             "email": info["email"],
-            "display_name": info["name"],
+            "display_name": unicode_patch(info["name"]) if info["name"] else "",
             "total_collab_commits": len(collab_commits),
             "ordered_matches_count": len(ordered_matches),
             "close_window_pairs": close_window_pairs,

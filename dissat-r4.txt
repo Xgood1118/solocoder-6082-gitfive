@@ -1,0 +1,2 @@
+产物不满意：
+1. unicode_patch 字典覆盖不全:bad_chars 只配了 é/è/ç/à 四个小写字符,其他法语/葡语/德语字符(ï ê ë ô ù ü ñ 等)和所有大写重音完全不被处理。与同文件 sanatize(unidecode 全量转写)行为严重不一致,'naïve' 仍输出 'naïve' 而非 'naive'。close_friends/organizations 模块的 display_name 依赖该函数,法语/葡语/德语用户真实姓名(Pierre Lëfèvre、François Müller、Iñaki 等)会在排名和成员列表里保留重音,下游 to_ascii 比较/去重会失败。

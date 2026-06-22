@@ -257,7 +257,8 @@ async def fetch_member_profile(runner: GitfiveRunner, username: str, member_data
                 return
 
             member_data["id"] = api_data.get("id")
-            member_data["display_name"] = api_data.get("name", "") or ""
+            raw_name = api_data.get("name", "") or ""
+            member_data["display_name"] = unicode_patch(raw_name) if raw_name else ""
             member_data["profile_fetched"] = True
             member_data["is_active"] = True
 

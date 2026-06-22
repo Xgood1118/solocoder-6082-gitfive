@@ -191,7 +191,9 @@ def unicode_patch(txt: str):
         "ç": "c",
         "à": "a"
     }
-    return txt.replace(''.join([*bad_chars.keys()]), ''.join([*bad_chars.values()]))
+    for char, replacement in bad_chars.items():
+        txt = txt.replace(char, replacement)
+    return txt
 
 def safe_print(txt: str):
     """
